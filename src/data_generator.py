@@ -1,137 +1,207 @@
 """
-Generate training data for the Rubik's cube predictor.
+data_generator.py - Generate training data for hidden face prediction
 
 Each sample:
-- Input: 5 visible faces
-- Output: 1 hidden face
-- The hidden face is randomly chosen (U, D, F, B, L, or R)
+    - Input: 5 visible faces (45 stickers)
+    - Target: 1 hidden face (9 stickers)
+    - Hidden face index: which face is hidden (0-5)
 """
 
-import json
-import os
-import random
-from cube import RubiksCube, FULL_COLORS
+import numpy as np
+from pathlib import Path
+from typing import Dict, Tuple, Optional
+from cube import RubiksCube
 
 
-def generate_samples(num_samples, num_scramble_moves=20):
+def generate_dataset(
+    num_cubes: int,
+    scramble_moves: int = 20,
+    samples_per_cube: int = 6,
+    seed: Optional[int] = None
+) -> Dict[str, np.ndarray]:
     """
-    Generate random cube samples.
+    Generate dataset of (visible_faces, hidden_face) pairs.
     
     Args:
-        num_samples: How many samples to generate
-        num_scramble_moves: How many moves to scramble each cube
-        
+        num_cubes: Number of unique cube scrambles to generate
+        scramble_moves: How many moves to scramble each cube
+        samples_per_cube: How many samples per cube (1-6)
+                        6 = hide each face once
+                        1 = hide one random face
+        seed: Random seed for reproducibility
+    
     Returns:
-        List of samples
+        Dictionary with:
+            'visible': (N, 5, 9) - the 5 visible faces
+            'target': (N, 9) - the hidden face to predict
+            'hidden_idx': (N,) - which face is hidden (0-5)
     """
-    samples = []
-    all_faces = ['U', 'D', 'F', 'B', 'L', 'R']
+    if seed is not None:
+        np.random.seed(seed)
     
-    for i in range(num_samples):
-        # Create and scramble a cube
+    total_samples = num_cubes * samples_per_cube
+    
+    # Pre-allocate arrays
+    visible = np.zeros((total_samples, 5, 9), dtype=np.int8)
+    target = np.zeros((total_samples, 9), dtype=np.int8)
+    hidden_idx = np.zeros(total_samples, dtype=np.int8)
+    
+    sample_i = 0
+    
+    for cube_i in range(num_cubes):
+        # Create and scramble cube
         cube = RubiksCube()
-        cube.scramble(num_scramble_moves)
+        cube.scramble(scramble_moves)
         
-        # Randomly choose which face is hidden
-        hidden_face_name = random.choice(all_faces)
+        # Get all faces as (6, 9)
+        all_faces = cube.get_all_faces()
         
-        # Get visible and hidden faces
-        visible = cube.get_visible_faces(hidden=hidden_face_name)
-        hidden = cube.get_hidden_face(hidden=hidden_face_name)
+        # Decide which faces to hide
+        if samples_per_cube == 6:
+            faces_to_hide = list(range(6))
+        else:
+            faces_to_hide = list(np.random.choice(6, samples_per_cube, replace=False))
         
-        # Store as a sample
-        sample = {
-            'visible': visible,
-            'hidden_face_name': hidden_face_name,
-            'hidden': hidden
-        }
-        samples.append(sample)
+        # Create samples
+        for hide in faces_to_hide:
+            # Visible faces: all except the hidden one
+            visible_indices = [i for i in range(6) if i != hide]
+            
+            visible[sample_i] = all_faces[visible_indices]
+            target[sample_i] = all_faces[hide]
+            hidden_idx[sample_i] = hide
+            
+            sample_i += 1
         
-        # Print progress every 1000 samples
-        if (i + 1) % 1000 == 0:
-            print(f"Generated {i + 1} / {num_samples} samples")
+        # Progress
+        if (cube_i + 1) % 2000 == 0:
+            print(f"  {cube_i + 1}/{num_cubes} cubes...")
     
-    return samples
+    return {
+        'visible': visible,
+        'target': target,
+        'hidden_idx': hidden_idx
+    }
 
 
-def save_data(samples, filename):
-    """Save samples to a JSON file."""
-    os.makedirs('data', exist_ok=True)
-    filepath = os.path.join('data', filename)
+def split_dataset(
+    data: Dict[str, np.ndarray],
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    seed: int = 42
+) -> Tuple[Dict, Dict, Dict]:
+    """
+    Split dataset into train/val/test sets.
     
-    with open(filepath, 'w') as f:
-        json.dump(samples, f)
+    Args:
+        data: Dataset dictionary
+        train_ratio: Fraction for training (default 0.8)
+        val_ratio: Fraction for validation (default 0.1)
+                   Test gets the remaining (0.1)
+        seed: Random seed
     
-    print(f"Saved {len(samples)} samples to {filepath}")
+    Returns:
+        (train_data, val_data, test_data) dictionaries
+    """
+    np.random.seed(seed)
+    
+    n = len(data['target'])
+    indices = np.random.permutation(n)
+    
+    train_end = int(train_ratio * n)
+    val_end = int((train_ratio + val_ratio) * n)
+    
+    train_idx = indices[:train_end]
+    val_idx = indices[train_end:val_end]
+    test_idx = indices[val_end:]
+    
+    def subset(idx):
+        return {key: arr[idx] for key, arr in data.items()}
+    
+    return subset(train_idx), subset(val_idx), subset(test_idx)
 
 
-def load_data(filename):
-    """Load samples from a JSON file."""
-    filepath = os.path.join('data', filename)
-    
-    with open(filepath, 'r') as f:
-        samples = json.load(f)
-    
-    print(f"Loaded {len(samples)} samples from {filepath}")
-    return samples
+def save_data(data: Dict[str, np.ndarray], filepath: str) -> None:
+    """Save dataset to .npz file."""
+    np.savez_compressed(filepath, **data)
 
 
-def print_sample(sample):
-    """Print a sample nicely."""
-    print(f"\nHidden face: {sample['hidden_face_name']}")
-    
-    print("\nVisible faces (INPUT):")
-    for face_name, face in sample['visible'].items():
-        colors = []
-        for row in face:
-            row_colors = [FULL_COLORS[c] for c in row]
-            colors.append(row_colors)
-        print(f"  {face_name}: {colors[0]}")
-        print(f"      {colors[1]}")
-        print(f"      {colors[2]}")
-    
-    print("\nHidden face (OUTPUT to predict):")
-    hidden = sample['hidden']
-    for row in hidden:
-        row_colors = [FULL_COLORS[c] for c in row]
-        print(f"  {row_colors}")
+def load_data(filepath: str) -> Dict[str, np.ndarray]:
+    """Load dataset from .npz file."""
+    loaded = np.load(filepath)
+    return {key: loaded[key] for key in loaded.files}
 
+
+def print_stats(data: Dict[str, np.ndarray], name: str = "Dataset") -> None:
+    """Print dataset statistics."""
+    n = len(data['target'])
+    
+    print(f"\n{name}:")
+    print(f"  Samples: {n}")
+    print(f"  Visible shape: {data['visible'].shape}")
+    print(f"  Target shape: {data['target'].shape}")
+    
+    # Hidden face distribution
+    counts = np.bincount(data['hidden_idx'], minlength=6)
+    faces = ['U', 'D', 'F', 'B', 'L', 'R']
+    dist = ', '.join(f"{f}:{c}" for f, c in zip(faces, counts))
+    print(f"  Hidden face distribution: {dist}")
+    
+    # Memory
+    mem_mb = sum(arr.nbytes for arr in data.values()) / 1024 / 1024
+    print(f"  Memory: {mem_mb:.2f} MB")
+
+
+# ============================================================
+# Main script
+# ============================================================
 
 if __name__ == "__main__":
-    # Generate training data
-    print("=== Generating Training Data ===")
-    print("This may take a moment...\n")
-    train_samples = generate_samples(100000)
-    save_data(train_samples, 'train.json')
+    # Setup paths
+    project_root = Path(__file__).parent.parent
+    data_dir = project_root / "data"
+    data_dir.mkdir(exist_ok=True)
     
-    # Generate validation data
-    print("\n=== Generating Validation Data ===")
-    val_samples = generate_samples(20000)
-    save_data(val_samples, 'val.json')
+    # Configuration
+    NUM_CUBES = 10000        # 10k cubes
+    SAMPLES_PER_CUBE = 6     # Hide each face once = 60k total samples
+    SCRAMBLE_MOVES = 20
+    SEED = 42
     
-    # Show example samples
-    print("\n=== Example Samples ===")
+    print("="*50)
+    print("GENERATING RUBIK'S CUBE DATASET")
+    print("="*50)
+    print(f"Cubes: {NUM_CUBES}")
+    print(f"Samples per cube: {SAMPLES_PER_CUBE}")
+    print(f"Total samples: {NUM_CUBES * SAMPLES_PER_CUBE}")
+    print(f"Scramble moves: {SCRAMBLE_MOVES}")
+    print()
     
-    # Show samples with different hidden faces
-    shown_faces = set()
-    for sample in train_samples:
-        if sample['hidden_face_name'] not in shown_faces:
-            print_sample(sample)
-            shown_faces.add(sample['hidden_face_name'])
-            print("\n" + "="*50)
-        
-        if len(shown_faces) >= 3:  # Show 3 examples
-            break
+    # Generate
+    print("Generating data...")
+    data = generate_dataset(
+        num_cubes=NUM_CUBES,
+        scramble_moves=SCRAMBLE_MOVES,
+        samples_per_cube=SAMPLES_PER_CUBE,
+        seed=SEED
+    )
+    print_stats(data, "Full dataset")
     
-    # Statistics
-    print("\n=== Dataset Statistics ===")
+    # Split
+    print("\nSplitting into train/val/test...")
+    train, val, test = split_dataset(data)
     
-    # Count hidden face distribution
-    hidden_counts = {'U': 0, 'D': 0, 'F': 0, 'B': 0, 'L': 0, 'R': 0}
-    for sample in train_samples:
-        hidden_counts[sample['hidden_face_name']] += 1
+    print_stats(train, "Train")
+    print_stats(val, "Val")
+    print_stats(test, "Test")
     
-    print("\nHidden face distribution (should be roughly equal):")
-    for face, count in hidden_counts.items():
-        percentage = count / len(train_samples) * 100
-        print(f"  {face}: {count} ({percentage:.2f}%)")
+    # Save
+    print("\nSaving...")
+    save_data(train, str(data_dir / "train.npz"))
+    save_data(val, str(data_dir / "val.npz"))
+    save_data(test, str(data_dir / "test.npz"))
+    
+    print(f"\nSaved to: {data_dir}")
+    print("\n" + "="*50)
+    print("DONE!")
+    print("="*50)

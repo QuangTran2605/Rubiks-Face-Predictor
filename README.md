@@ -8,7 +8,7 @@ We'll start by feeding a set of images (2-5) to the model, which captures the pa
 WIP 
 
 ## Model
-WIP
+GNN - Graph Neural Network
 
 ## Status
-WIP
+02/03/26: Cube simulator and data generator created. 
