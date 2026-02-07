@@ -1,9 +1,8 @@
 """
-cube.py - Rubik's Cube Simulator
+rubiks_cube.py - Rubik's Cube Simulator
 
-A complete 3x3 Rubik's Cube implementation for ML purposes.
-Supports all standard moves and scrambling.
-
+Uses explicit, verified move implementations.
+Each move is carefully defined with correct sticker cycles.
 """
 
 import numpy as np
@@ -15,158 +14,236 @@ class RubiksCube:
     """
     A 3x3 Rubik's Cube simulator.
     
-    Face indices:
-        0: Up (U)    - White  (in solved state)
-        1: Down (D)  - Yellow
-        2: Front (F) - Green
-        3: Back (B)  - Blue
-        4: Left (L)  - Orange
-        5: Right (R) - Red
+    Faces: U=0, D=1, F=2, B=3, L=4, R=5
     
-    State representation:
-        - Shape: (6, 3, 3) numpy array
-        - Values: 0-5 representing colors
-        - state[face_idx, row, col] gives the color at that position
+    State: (6, 3, 3) numpy array
+    
+    Each face layout:
+        [0][1][2]
+        [3][4][5]
+        [6][7][8]
+    
+    When looking at the cube:
+        - U (Up/White) is on top
+        - F (Front/Green) faces you
+        - R (Right/Red) is on your right
+        - L (Left/Orange) is on your left
+        - B (Back/Blue) is behind
+        - D (Down/Yellow) is on bottom
     """
-    #Class constants for faces: 
+    
     U, D, F, B, L, R = 0, 1, 2, 3, 4, 5
     FACE_NAMES = ['U', 'D', 'F', 'B', 'L', 'R']
-
-    # Move definitions: (face_to_rotate, [4 adjacent edges that cycle])
-    # Each edge is (face, row_slice, col_slice, needs_reverse)
-    # Edges cycle: 0 -> 1 -> 2 -> 3 -> 0 (for clockwise)
-    MOVES = {
-        'U': (0, [
-            (2, 0, slice(None), False),  # F top row
-            (5, 0, slice(None), False),  # R top row
-            (3, 0, slice(None), False),  # B top row
-            (4, 0, slice(None), False)   # L top row
-        ]),
-        'D': (1, [
-            (2, 2, slice(None), False),  # F bottom row
-            (4, 2, slice(None), False),  # L bottom row
-            (3, 2, slice(None), False),  # B bottom row
-            (5, 2, slice(None), False)   # R bottom row
-        ]),
-        'F': (2, [
-            (0, 2, slice(None), False),  # U bottom row
-            (5, slice(None), 0, True),   # R left col
-            (1, 0, slice(None), False),  # D top row
-            (4, slice(None), 2, True)    # L right col
-        ]),
-        'B': (3, [
-            (0, 0, slice(None), False),  # U top row
-            (4, slice(None), 0, True),   # L left col
-            (1, 2, slice(None), False),  # D bottom row
-            (5, slice(None), 2, True)    # R right col
-        ]),
-        'L': (4, [
-            (0, slice(None), 0, True),   # U left col
-            (2, slice(None), 0, True),   # F left col
-            (1, slice(None), 0, True),   # D left col
-            (3, slice(None), 2, True)    # B right col
-        ]),
-        'R': (5, [
-            (0, slice(None), 2, True),   # U right col
-            (3, slice(None), 0, True),   # B left col
-            (1, slice(None), 2, True),   # D right col
-            (2, slice(None), 2, True)    # F right col
-        ])
-    }
-
+    COLOR_NAMES = ['W', 'Y', 'G', 'B', 'O', 'R']
+    
     def __init__(self, state: Optional[np.ndarray] = None):
-        """
-        Initialize the Rubik's Cube.
-        
-        Args:
-            state (Optional[np.ndarray]): Initial state of the cube. If None, initializes to solved state.
-        """
-        if state is not None: 
+        if state is not None:
             self.state = state.copy()
         else:
             self.reset()
     
     def reset(self) -> None:
-        """Reset cube to solved state."""
-        # Each face filled with its index (0-5)
+        """Reset to solved state."""
         self.state = np.zeros((6, 3, 3), dtype=np.int8)
-        for face_idx in range(6):
-            self.state[face_idx] = face_idx
+        for i in range(6):
+            self.state[i] = i
     
     def copy(self) -> 'RubiksCube':
-        """Create a deep copy of this cube."""
-        return RubiksCube(state=self.state.copy())
+        return RubiksCube(self.state)
     
     def get_face(self, face: int) -> np.ndarray:
-        """Get a face as 3x3 array."""
         return self.state[face].copy()
     
     def get_all_faces(self) -> np.ndarray:
         """Get all faces as (6, 9) array."""
         return self.state.reshape(6, 9)
     
-    def _get_edge(self, face: int, row, col) -> np.ndarray:
-        """Extract an edge (row or column) from a face."""
-        return self.state[face, row, col].copy()
+    def is_valid(self) -> bool:
+        """Check color counts (9 of each)."""
+        flat = self.state.flatten()
+        return all(np.sum(flat == c) == 9 for c in range(6))
     
-    def _set_edge(self, face: int, row, col, values: np.ndarray) -> None:
-        """Set an edge (row or column) on a face."""
-        self.state[face, row, col] = values
+    # =========================================================================
+    # ROTATION HELPERS
+    # =========================================================================
     
-    def _do_move(self, move_name: str, prime: bool = False) -> None:
-        """
-        Execute a single face move.
+    def _rotate_cw(self, face: int) -> None:
+        """Rotate face 90° clockwise."""
+        self.state[face] = np.rot90(self.state[face], k=-1)
+    
+    def _rotate_ccw(self, face: int) -> None:
+        """Rotate face 90° counter-clockwise."""
+        self.state[face] = np.rot90(self.state[face], k=1)
+    
+    # =========================================================================
+    # MOVE IMPLEMENTATIONS
+    # Each move rotates one face and cycles 4 adjacent strips
+    # =========================================================================
+    
+    def move_U(self) -> None:
+        """U move: rotate Up face clockwise."""
+        self._rotate_cw(self.U)
         
-        Args:
-            move_name: One of 'U', 'D', 'F', 'B', 'L', 'R'
-            prime: If True, rotate counter-clockwise
-        """
-        face, edges = self.MOVES[move_name]
+        # Cycle: F[top] -> L[top] -> B[top] -> R[top] -> F[top]
+        temp = self.state[self.F, 0, :].copy()
+        self.state[self.F, 0, :] = self.state[self.R, 0, :]
+        self.state[self.R, 0, :] = self.state[self.B, 0, :]
+        self.state[self.B, 0, :] = self.state[self.L, 0, :]
+        self.state[self.L, 0, :] = temp
+    
+    def move_U_prime(self) -> None:
+        """U' move: rotate Up face counter-clockwise."""
+        self._rotate_ccw(self.U)
         
-        # Rotate the face itself
-        k = 1 if prime else -1  # rot90 direction
-        self.state[face] = np.rot90(self.state[face], k=k)
+        # Cycle: F[top] -> R[top] -> B[top] -> L[top] -> F[top]
+        temp = self.state[self.F, 0, :].copy()
+        self.state[self.F, 0, :] = self.state[self.L, 0, :]
+        self.state[self.L, 0, :] = self.state[self.B, 0, :]
+        self.state[self.B, 0, :] = self.state[self.R, 0, :]
+        self.state[self.R, 0, :] = temp
+    
+    def move_D(self) -> None:
+        """D move: rotate Down face clockwise."""
+        self._rotate_cw(self.D)
         
-        # Collect current edge values
-        edge_values = []
-        for f, r, c, rev in edges:
-            val = self._get_edge(f, r, c)
-            edge_values.append(val)
+        # Cycle: F[bottom] -> R[bottom] -> B[bottom] -> L[bottom] -> F[bottom]
+        # Note: opposite direction from U because we're looking from below
+        temp = self.state[self.F, 2, :].copy()
+        self.state[self.F, 2, :] = self.state[self.L, 2, :]
+        self.state[self.L, 2, :] = self.state[self.B, 2, :]
+        self.state[self.B, 2, :] = self.state[self.R, 2, :]
+        self.state[self.R, 2, :] = temp
+    
+    def move_D_prime(self) -> None:
+        """D' move: rotate Down face counter-clockwise."""
+        self._rotate_ccw(self.D)
         
-        # Cycle edges (direction depends on prime)
-        n = len(edges)
-        if prime:
-            # Cycle: 0 <- 1 <- 2 <- 3 <- 0
-            new_order = [1, 2, 3, 0]
-        else:
-            # Cycle: 0 -> 1 -> 2 -> 3 -> 0  means 0 <- 3, 1 <- 0, etc.
-            new_order = [3, 0, 1, 2]
+        temp = self.state[self.F, 2, :].copy()
+        self.state[self.F, 2, :] = self.state[self.R, 2, :]
+        self.state[self.R, 2, :] = self.state[self.B, 2, :]
+        self.state[self.B, 2, :] = self.state[self.L, 2, :]
+        self.state[self.L, 2, :] = temp
+    
+    def move_F(self) -> None:
+        """F move: rotate Front face clockwise."""
+        self._rotate_cw(self.F)
         
-        # Apply cycled values with proper reversals
-        for i, (f, r, c, rev) in enumerate(edges):
-            src_idx = new_order[i]
-            val = edge_values[src_idx]
-            
-            # Handle reversal based on source and destination
-            src_rev = edges[src_idx][3]
-            if src_rev != rev:
-                val = val[::-1]
-            
-            self._set_edge(f, r, c, val)
+        # Cycle: U[bottom] -> R[left] -> D[top] -> L[right] -> U[bottom]
+        temp = self.state[self.U, 2, :].copy()
+        
+        self.state[self.U, 2, :] = self.state[self.L, :, 2][::-1]
+        self.state[self.L, :, 2] = self.state[self.D, 0, :]
+        self.state[self.D, 0, :] = self.state[self.R, :, 0][::-1]
+        self.state[self.R, :, 0] = temp
+    
+    def move_F_prime(self) -> None:
+        """F' move: rotate Front face counter-clockwise."""
+        self._rotate_ccw(self.F)
+        
+        temp = self.state[self.U, 2, :].copy()
+        
+        self.state[self.U, 2, :] = self.state[self.R, :, 0]
+        self.state[self.R, :, 0] = self.state[self.D, 0, :][::-1]
+        self.state[self.D, 0, :] = self.state[self.L, :, 2]
+        self.state[self.L, :, 2] = temp[::-1]
+    
+    def move_B(self) -> None:
+        """B move: rotate Back face clockwise."""
+        self._rotate_cw(self.B)
+        
+        # Cycle: U[top] -> L[left] -> D[bottom] -> R[right] -> U[top]
+        temp = self.state[self.U, 0, :].copy()
+        
+        self.state[self.U, 0, :] = self.state[self.R, :, 2]
+        self.state[self.R, :, 2] = self.state[self.D, 2, :][::-1]
+        self.state[self.D, 2, :] = self.state[self.L, :, 0]
+        self.state[self.L, :, 0] = temp[::-1]
+    
+    def move_B_prime(self) -> None:
+        """B' move: rotate Back face counter-clockwise."""
+        self._rotate_ccw(self.B)
+        
+        temp = self.state[self.U, 0, :].copy()
+        
+        self.state[self.U, 0, :] = self.state[self.L, :, 0][::-1]
+        self.state[self.L, :, 0] = self.state[self.D, 2, :]
+        self.state[self.D, 2, :] = self.state[self.R, :, 2][::-1]
+        self.state[self.R, :, 2] = temp
+    
+    def move_L(self) -> None:
+        """L move: rotate Left face clockwise."""
+        self._rotate_cw(self.L)
+        
+        # Cycle: U[left] -> F[left] -> D[left] -> B[right] -> U[left]
+        temp = self.state[self.U, :, 0].copy()
+        
+        self.state[self.U, :, 0] = self.state[self.B, :, 2][::-1]
+        self.state[self.B, :, 2] = self.state[self.D, :, 0][::-1]
+        self.state[self.D, :, 0] = self.state[self.F, :, 0]
+        self.state[self.F, :, 0] = temp
+    
+    def move_L_prime(self) -> None:
+        """L' move: rotate Left face counter-clockwise."""
+        self._rotate_ccw(self.L)
+        
+        temp = self.state[self.U, :, 0].copy()
+        
+        self.state[self.U, :, 0] = self.state[self.F, :, 0]
+        self.state[self.F, :, 0] = self.state[self.D, :, 0]
+        self.state[self.D, :, 0] = self.state[self.B, :, 2][::-1]
+        self.state[self.B, :, 2] = temp[::-1]
+    
+    def move_R(self) -> None:
+        """R move: rotate Right face clockwise."""
+        self._rotate_cw(self.R)
+        
+        # Cycle: U[right] -> B[left] -> D[right] -> F[right] -> U[right]
+        temp = self.state[self.U, :, 2].copy()
+        
+        self.state[self.U, :, 2] = self.state[self.F, :, 2]
+        self.state[self.F, :, 2] = self.state[self.D, :, 2]
+        self.state[self.D, :, 2] = self.state[self.B, :, 0][::-1]
+        self.state[self.B, :, 0] = temp[::-1]
+    
+    def move_R_prime(self) -> None:
+        """R' move: rotate Right face counter-clockwise."""
+        self._rotate_ccw(self.R)
+        
+        temp = self.state[self.U, :, 2].copy()
+        
+        self.state[self.U, :, 2] = self.state[self.B, :, 0][::-1]
+        self.state[self.B, :, 0] = self.state[self.D, :, 2][::-1]
+        self.state[self.D, :, 2] = self.state[self.F, :, 2]
+        self.state[self.F, :, 2] = temp
+    
+    # =========================================================================
+    # MOVE EXECUTION
+    # =========================================================================
     
     def execute_move(self, move: str) -> None:
-        """
-        Execute a move in standard notation.
+        """Execute a move in standard notation."""
+        move_map = {
+            'U': self.move_U,
+            "U'": self.move_U_prime,
+            'D': self.move_D,
+            "D'": self.move_D_prime,
+            'F': self.move_F,
+            "F'": self.move_F_prime,
+            'B': self.move_B,
+            "B'": self.move_B_prime,
+            'L': self.move_L,
+            "L'": self.move_L_prime,
+            'R': self.move_R,
+            "R'": self.move_R_prime,
+        }
         
-        Examples: 'U', "U'", 'U2', 'R', "R'", 'R2'
-        """
-        if len(move) == 1:
-            self._do_move(move, prime=False)
-        elif move[1] == "'":
-            self._do_move(move[0], prime=True)
-        elif move[1] == "2":
-            self._do_move(move[0], prime=False)
-            self._do_move(move[0], prime=False)
+        if move in move_map:
+            move_map[move]()
+        elif len(move) == 2 and move[1] == '2':
+            # Double move (e.g., U2)
+            base = move[0]
+            move_map[base]()
+            move_map[base]()
         else:
             raise ValueError(f"Unknown move: {move}")
     
@@ -176,11 +253,7 @@ class RubiksCube:
             self.execute_move(move)
     
     def scramble(self, num_moves: int = 20, seed: Optional[int] = None) -> List[str]:
-        """
-        Scramble with random moves.
-        
-        Returns list of moves applied.
-        """
+        """Scramble with random moves."""
         if seed is not None:
             random.seed(seed)
         
@@ -191,7 +264,6 @@ class RubiksCube:
         last_face = None
         
         for _ in range(num_moves):
-            # Avoid same face twice in a row
             available = [m for m in all_moves if m[0] != last_face]
             move = random.choice(available)
             moves_applied.append(move)
@@ -200,27 +272,21 @@ class RubiksCube:
         self.execute_moves(moves_applied)
         return moves_applied
     
-    def is_valid(self) -> bool:
-        """Check if cube has correct color counts (9 of each)."""
-        flat = self.state.flatten()
-        return all(np.sum(flat == c) == 9 for c in range(6))
+    # =========================================================================
+    # DISPLAY
+    # =========================================================================
     
     def __repr__(self) -> str:
-        """Simple text display of the cube."""
-        colors = ['W', 'Y', 'G', 'B', 'O', 'R']  # Color chars
-        
         def face_str(f, row):
-            return ' '.join(colors[c] for c in self.state[f, row])
+            return ' '.join(self.COLOR_NAMES[c] for c in self.state[f, row])
         
         lines = []
         
-        # Up face (indented)
         for row in range(3):
             lines.append(f"       {face_str(0, row)}")
         
         lines.append("")
         
-        # L F R B in a row
         for row in range(3):
             l = face_str(4, row)
             f = face_str(2, row)
@@ -230,32 +296,26 @@ class RubiksCube:
         
         lines.append("")
         
-        # Down face (indented)
         for row in range(3):
             lines.append(f"       {face_str(1, row)}")
         
         return '\n'.join(lines)
-    
-def create_scrambled_cube(num_moves: int, seed: Optional[int] = None) -> Tuple[RubiksCube, List[str]]:
-    """Create a new scrambled cube. Returns (cube, moves_applied)."""
+
+
+def create_scrambled_cube(num_moves: int = 20, seed: Optional[int] = None) -> Tuple[RubiksCube, List[str]]:
+    """Create a scrambled cube."""
     cube = RubiksCube()
     moves = cube.scramble(num_moves, seed)
     return cube, moves
 
+
 if __name__ == "__main__":
-    # Quick demo
-    print("Solved cube:")
     cube = RubiksCube()
+    print("Solved:")
     print(cube)
     print()
-        
-    print("After scrambling:")
+    
     moves = cube.scramble(20, seed=42)
-    print(f"Moves: {' '.join(moves)}")
+    print(f"Scramble: {' '.join(moves)}")
     print(cube)
     print(f"\nValid: {cube.is_valid()}")
-    
-    
-
-
-    
